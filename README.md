@@ -220,7 +220,7 @@ Lưu ý grid: client bỏ tiền tố `group_`, `g`, `G` trước khi gửi (`cl
 | `POST {group}/api/group/sendmsg` | `send_group_message` | `grid`, `message`, `clientId`, `imei`, `visibility=0` | |
 | `POST {chat}/api/message/quote` (cmd 11771) | `send_quote_message` | `toid`, `message`, `clientId`, `qmsgOwner` (uid người gửi gốc hoặc `toid`), `qmsgId` (u64), `qmsgCliId`, `qmsgType=1`, `qmsgTs`, `qmsg`, `imei`, `ttl=0`, `zsource=101` | tin gốc phải có id server (không `out_`/`local_`); thất bại → fallback `sms` |
 | `POST {group}/api/group/quote` (cmd 11197) | `send_quote_message` | như trên + `grid`, `language=vi`, `visibility=0` | |
-| `GET {file}/api/message/parselink?{common}&params=…` (cmd 11285) | `parse_link_metadata` | `link`, `version=1`, `imei` | **nguồn duy nhất** cho mọi bản xem trước liên kết; client không bao giờ tải URL trực tiếp (ADR-0002) |
+| `GET {file}/api/message/parselink?{common}&params=…` (cmd 11285) | `parse_link_metadata` | `link`, `version=1`, `imei` | **nguồn duy nhất** cho mọi bản xem trước liên kết; client không bao giờ tải URL trực tiếp (ADR-0005) |
 | `POST {chat}/api/message/link` (cmd 11286) | `send_link_message` | `toId`, `msg`, `href`, `src`, `title`, `desc`, `thumb`, `type=0`, `media` (JSON chuỗi), `clientId`, `mentionInfo=""`, `language=vi`, `ttl=0`, `imei` | lỗi → log + fallback `sms` |
 | `POST {group}/api/group/sendlink` (cmd 11193) | `send_link_message` | như trên với `grid`, `mentionInfo="[]"` | |
 | `POST {chat}/api/message/sticker` (cmd 11154) | `send_sticker` | `toid`, `stickerId`, `cateId`, `type`, `clientId`, `imei`, `zsource=101` | |
@@ -333,3 +333,32 @@ MIME suy từ đuôi file (`mp4`, `mov`, `mkv`, `webm`, `mp3`, `wav`, `pdf`, `zi
 | `GET <browser_download_url>` | người dùng bấm Cập nhật | `updater::download_release`: ≤ 512 MiB, ≥ 512 KiB, SHA-256 **bắt buộc**, magic PE/ELF | URL phải thuộc `github.com` / `objects.githubusercontent.com` |
 
 Không còn request nào khác ra ngoài Zalo: xem trước liên kết luôn đi qua `parselink`; ảnh/thumbnail trong tin nhắn chỉ tự tải khi host thuộc `zalo.me`, `zaloapp.com`, `zdn.vn`, `zadn.vn` (`endpoints::is_trusted_media_url`), host khác cần người dùng bấm.
+
+---
+
+## 11. Bổ sung từ upstream v0.0.4 (2026-11-02)
+
+### 11.1 Failover nhiều host (`Session::request_with_candidates`, `Domains::candidates`)
+
+Với các khoá `chat`, `friend`, `group`, `conversation`, `profile`, client thử lần lượt: hằng đã xác minh → mọi host máy chủ liệt kê trong `zpw_service_map_v3` (`service_map_candidates`) → host cũ đã lưu trong `session.json` (`saved_candidates`). Host thắng được ghi nhớ trong phiên (`remember_winner`). Các host dự phòng đã thấy: `tt-chat4-wpa.api.zaloapp.com`, `tt-chat5-wpa.api.zaloapp.com`, `tt-friend2-wpa.chat.zalo.me`, `legacy-saved-chat.zaloapp.com`. Chỉ lỗi mạng/HTTP 5xx/404 mới chuyển host (`should_failover_candidate`); lỗi `error_code` của Zalo thì không.
+
+### 11.2 Nhật ký và hồ sơ xã hội (`src/feed.rs`)
+
+| Method | Host | Đường dẫn | Điều kiện / thời điểm | Payload | Dùng |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `profile` | `/api/social/friend/getprofiles?{common}&params=…&os=8` | [Đã đăng nhập]; mở trang Nhật ký của một bạn | `fid`, `avatar_size`, `language=vi`, `imei` | ảnh bìa (`cover`), avatar, `sdob`, `bio`, tên |
+| GET | `profile` | `/api/social/avatar-list?{common}&params=…&os=8` | mở kho ảnh của chính mình | `page`, `count`, `imei` | danh sách ảnh (`photo_id`, `url`, `thumbnail`, kích thước) |
+| POST | `profile` | `/api/social/friend/getprofiles/v2?{common}` | tải timeline: hồ sơ hàng loạt | `friend_pversion_map: ["<uid>_0", …]` | `data.changed_profiles` |
+| WebSocket | `ws` | cmd `50001` (`CMD_FEED_TIMELINE`), subCmd `0x00150102` lấy feed / `0x00220411` đăng / `0x26580022` sửa | gói nhị phân do `feed::packet::build_request_packet` dựng | `owner_id`, `viewer_id`, `tab`, `page`, `count` | timeline (hiện client dựng feed từ hồ sơ + ảnh, gói socket được đóng gói nhưng chưa dùng làm nguồn chính) |
+
+### 11.3 Tin hẹn giờ (`src/scheduler.rs`)
+
+Không có endpoint mới: tin được lưu trong bảng `scheduled_messages` của `zalo_history.db`; worker quét mỗi 2 giây và gửi qua `send_message` / `send_group_message` (mục 5) khi đến hạn.
+
+### 11.4 Đồng bộ lịch sử có cursor (`src/history_sync.rs`)
+
+Dùng `GET {cloud_msg}/api/cm/getoldv2` (mục 4) theo trang 50 tin, tối đa 20 trang mỗi lần chạy, nghỉ 400 ms giữa các trang, cursor là `msg_id` cũ nhất đã lưu. Chỉ cho nhóm và Cloud của tôi; 1-1 không có API lịch sử qua HTTP.
+
+### 11.5 Server cục bộ cho công cụ ngoài (`src/api_mcp.rs`) — không gọi Zalo trực tiếp
+
+Chỉ chạy khi có `--api-port <PORT>` (HTTP trên `127.0.0.1`) hoặc `--mcp` (JSON-RPC 2.0 qua stdio). Trên nhánh `personal`, HTTP **bắt buộc** `CTDOZLITE_API_TOKEN` (≥ 16 ký tự, so sánh thời gian hằng) trong `Authorization: Bearer`, không trả header CORS, preflight bị từ chối. Route: `GET /api/v1/{status, threads, search, scheduled, autoreply, export}`, `POST /api/v1/{messages/send, messages/schedule, autoreply, mcp}`. Mọi hành động gửi tin của API này đi qua các endpoint Zalo ở mục 5 với phiên hiện tại; `autoreply_rules.json` rỗng mặc định nên không tự trả lời.
