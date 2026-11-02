@@ -1,6 +1,6 @@
 # Danh sách API Zalo mà client gọi
 
-Tài liệu tra cứu đầy đủ cho đội phát triển: với mỗi endpoint ghi **host thật**, **điều kiện tiên quyết**, **thời điểm client gọi**, **tham số gửi**, **trường phản hồi được dùng**, **mã lỗi xử lý** và **vị trí mã**. Trích từ `src/` ngày 2026-11-02 (sau đợt khắc phục kiểm toán). Mọi hành vi giao thức là bản tái hiện từ Zalo PC 26.10.11; đổi tham số phải có bằng chứng capture (`re-notes/`).
+Tài liệu tra cứu đầy đủ cho đội phát triển: với mỗi endpoint ghi **host thật**, **điều kiện tiên quyết**, **thời điểm client gọi**, **tham số gửi**, **trường phản hồi được dùng**, **mã lỗi xử lý** và **vị trí mã**. Trích từ `src/` ngày 2026-11-02, cập nhật 2026-11-03 theo upstream v0.0.6 (sau đợt khắc phục kiểm toán). Mọi hành vi giao thức là bản tái hiện từ Zalo PC 26.10.11; đổi tham số phải có bằng chứng capture (`re-notes/`).
 
 ---
 
@@ -362,3 +362,41 @@ Dùng `GET {cloud_msg}/api/cm/getoldv2` (mục 4) theo trang 50 tin, tối đa 2
 ### 11.5 Server cục bộ cho công cụ ngoài (`src/api_mcp.rs`) — không gọi Zalo trực tiếp
 
 Chỉ chạy khi có `--api-port <PORT>` (HTTP trên `127.0.0.1`) hoặc `--mcp` (JSON-RPC 2.0 qua stdio). Trên nhánh `personal`, HTTP **bắt buộc** `CTDOZLITE_API_TOKEN` (≥ 16 ký tự, so sánh thời gian hằng) trong `Authorization: Bearer`, không trả header CORS, preflight bị từ chối. Route: `GET /api/v1/{status, threads, search, scheduled, autoreply, export}`, `POST /api/v1/{messages/send, messages/schedule, autoreply, mcp}`. Mọi hành động gửi tin của API này đi qua các endpoint Zalo ở mục 5 với phiên hiện tại; `autoreply_rules.json` rỗng mặc định nên không tự trả lời.
+
+---
+
+## 12. Bổ sung từ upstream v0.0.6 (2026-11-03)
+
+Trích từ `src/chat.rs`, `src/history_sync.rs`, `src/unread.rs`, `src/session.rs` sau khi gộp v0.0.6 vào nhánh `personal`. Mọi request vẫn đi đường chuẩn: `params` → `ParamCipher v2` (`encoded_params`) → `signkey` → cookie phiên; phản hồi giải mã qua `maybe_decrypt`.
+
+### 12.1 Tắt thông báo hai chiều (#67)
+
+| Method | Host | Đường dẫn | Điều kiện / thời điểm | Payload (`params` mã hoá) | Phản hồi dùng | Mã |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `profile` | `/api/social/profile/setmute?{common}` body `params=…` | [Đã đăng nhập]; người dùng bấm Tắt/Bật thông báo trên một hội thoại (`WorkerCmd::SetMute`) | `toid` (ID đã bỏ tiền tố `group_`/`g`), `duration` (`3600`, `14400`, số giây tới 8:00 sáng, hoặc `-1` = vô thời hạn), `action` (`1` tắt, `2` bật), `startTime` (giây Unix), `muteType` (`1` cá nhân, `2` nhóm), `imei` | chỉ kiểm `error_code`; ngay sau đó gọi `getmute` để lấy bản chuẩn | `chat::set_mute_conversation` (cmd 11288) |
+| GET | `profile` | `/api/social/profile/getmute?{common}&params=…` | sau đăng nhập, mỗi tick danh sách hội thoại, và sau mỗi `setmute` | `imei` | `chatEntries[]`, `groupChatEntries[]` với `id`, `muteMode` (chỉ nhận `1`), `duration` (`0` bỏ qua, `<0` vô hạn), `startTime` hoặc `systemTime` → `thread_id → until_unix` (`unread::extract_mute_map`), đồng thời gắn `presentation.muted` (`merge_mute_metadata`) | `chat::get_mute_conversations` (cmd 11280) |
+| WS / long-poll | `ws`, `lp_control` | gói `cmd 601/602/603` hoặc `lp_control` có `act_type: "mute"`, `act: "set" \| "unset"` | nhận bất kỳ lúc nào khi máy khác đổi trạng thái | `controls[]` hoặc `data` phẳng: `id`/`toid`, `isGroup`/`muteType`, `duration`, `startTime` | `MuteControlEvent { thread_id, is_group, muted, muted_until, settings_until }` → `AppSettings::muted_threads` | `chat::extract_mute_controls` (gọi từ `call.rs:986` và `worker.rs:594`) |
+
+Điểm cần nhớ: máy chủ là nguồn chuẩn; client **không** tự tin vào kết quả `setmute` mà luôn đọc lại `getmute`. Thời hạn hết thì bỏ qua entry (`exp <= now`).
+
+### 12.2 Đồng bộ tin nhắn từ điện thoại (#68)
+
+Kích hoạt từ Cài đặt (`WorkerCmd::SyncPhoneMessages`), chạy trên worker với cờ `PHONE_SYNC_RUNNING` (chặn chạy trùng) và `PHONE_SYNC_CANCEL` (huỷ giữa chừng). `public_key` là 32 byte ngẫu nhiên mã hoá base64 (`history_sync::generate_sync_public_key`), dùng chung cho cả ba request của một lượt.
+
+| Method | Host | Đường dẫn | Điều kiện / thời điểm | Payload (`params` mã hoá) | Phản hồi dùng | Mã |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `file` | `/api/message/pull_mobile_msg?{common}&params=…` | pha 1 của lượt đồng bộ | `pc_name` (tên máy), `public_key`, `from_seq_id=0`, `is_retry=0`, `min_seq_id=0`, `temp_key=""`, `imei` | lỗi bị bỏ qua (`let _ =`), chỉ là tín hiệu đánh thức điện thoại | `chat::request_phone_sync` (cmd 12000) |
+| GET | `file` | `/api/transfer-sync-v2/request-sync?{common}&params=…` | ngay sau `pull_mobile_msg` | `pc_name`, `public_key`, `version=1`, `is_retry=0`, `temp_key=""`, `imei` | như trên | `chat::request_phone_sync_v2` (cmd 12888) |
+| GET | `file` | `/api/message/cancel_pull_mobile_msg?{common}&params=…` | người dùng bấm Huỷ trong lúc đồng bộ | `public_key`, `imei` | như trên | `chat::cancel_phone_sync` (cmd 12700) |
+
+Các pha sau **không có endpoint mới**: nghỉ 600 ms, rút tối đa 5 lô `lp_chat` (`get_chat_from_polling`, mục 4, dừng khi `more == 0` và không có `resetLastActionId`), rồi `get-last-msgs` theo lô 25 hội thoại (mục 4), rồi `getrecentv2`/`getoldv2` cho Cloud và nhóm (mục 4), cuối cùng ghi `zalo_history.db` + `threads_cache.json`. Kết quả về GUI qua `PhoneSyncProgress` / `PhoneSyncFinished { added, active_threads, cancelled, error }`.
+
+### 12.3 Proxy và đa tài khoản (#64) — thay đổi đường đi, không thêm endpoint
+
+- Nguồn cấu hình theo thứ tự: `--proxy <url>` → biến môi trường `ZALO_PROXY` rồi `CTDOZLITE_PROXY` → `proxy_url` lưu trong `session.json` / `settings.json`. `session::normalize_proxy_url` chỉ chấp nhận `http://`, `https://`, `socks5://`, `socks5h://` (chuỗi `host:port` trần được gắn `http://`); `redact_proxy_url` che `user:pass@` khi hiển thị.
+- **Phạm vi proxy chỉ là client HTTP `reqwest` trong `Session`** (`build_http_client`). WebSocket (`src/socket.rs`), relay UDP VoIP (`src/call.rs`, `src/media.rs`), tải ảnh/thumbnail và updater **không** đi qua proxy. Người dùng bật proxy để ẩn địa chỉ IP vẫn lộ IP thật trên các đường này; xem phát hiện bổ sung trong `docs/KIEM_TOAN_HE_THONG.html`.
+- `--profile <tên>` (chỉ chữ, số, `-`, `_`) đặt thư mục dữ liệu thành `<data_dir>/profiles/<tên>` nên mỗi tài khoản có `session.json`, DB và cookie riêng; nút "Mở cửa sổ Zalo mới" trong Cài đặt khởi chạy thêm một tiến trình với `--gui --profile <tên> [--proxy <url>]`.
+
+### 12.4 Sticker GIF nội bộ và định dạng văn bản — không gọi mạng
+
+Gói "Mèo Ami Bụng Bự" nhúng sẵn 15 cặp GIF/PNG trong `src/assets/ami_fat_cat/` (`cate_id` riêng, `sticker_id` 999001–999015) và được gửi như sticker thường qua `/api/.../sticker` (mục 7). Giải mã `params.textProperties` (RTF của Zalo PC/Mobile) và render Markdown diễn ra hoàn toàn trên client từ nội dung tin nhắn đã nhận; đây là bề mặt phân tích dữ liệu không tin cậy mới, chưa có bằng chứng lỗi nhưng cần đọc kỹ khi kiểm toán lại.
