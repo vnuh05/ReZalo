@@ -394,7 +394,7 @@ Các pha sau **không có endpoint mới**: nghỉ 600 ms, rút tối đa 5 lô 
 ### 12.3 Proxy và đa tài khoản (#64) — thay đổi đường đi, không thêm endpoint
 
 - Nguồn cấu hình theo thứ tự: `--proxy <url>` → biến môi trường `ZALO_PROXY` rồi `CTDOZLITE_PROXY` → `proxy_url` lưu trong `session.json` / `settings.json`. `session::normalize_proxy_url` chỉ chấp nhận `http://`, `https://`, `socks5://`, `socks5h://` (chuỗi `host:port` trần được gắn `http://`); `redact_proxy_url` che `user:pass@` khi hiển thị.
-- **Phạm vi proxy chỉ là client HTTP `reqwest` trong `Session`** (`build_http_client`). WebSocket (`src/socket.rs`), relay UDP VoIP (`src/call.rs`, `src/media.rs`), tải ảnh/thumbnail và updater **không** đi qua proxy. Người dùng bật proxy để ẩn địa chỉ IP vẫn lộ IP thật trên các đường này; xem phát hiện bổ sung trong `docs/KIEM_TOAN_HE_THONG.html`.
+- **Phạm vi proxy chỉ là client HTTP `reqwest` trong `Session`** (`build_http_client`). Tải ảnh/thumbnail/sticker dùng lại `Session.http` nên cũng đi qua proxy. WebSocket (`src/socket.rs`) và relay UDP VoIP (`src/call.rs`, `src/media.rs`) **không** đi qua proxy (updater cũng đi thẳng nhưng đích là GitHub). Người dùng bật proxy để ẩn địa chỉ IP vẫn lộ IP thật trên WebSocket và cuộc gọi; xem phát hiện bổ sung trong `docs/KIEM_TOAN_HE_THONG.html`.
 - `--profile <tên>` (chỉ chữ, số, `-`, `_`) đặt thư mục dữ liệu thành `<data_dir>/profiles/<tên>` nên mỗi tài khoản có `session.json`, DB và cookie riêng; nút "Mở cửa sổ Zalo mới" trong Cài đặt khởi chạy thêm một tiến trình với `--gui --profile <tên> [--proxy <url>]`.
 
 ### 12.4 Sticker GIF nội bộ và định dạng văn bản — không gọi mạng
