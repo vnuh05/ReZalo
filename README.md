@@ -1,6 +1,6 @@
 # Danh sách API Zalo mà client gọi
 
-Tài liệu tra cứu đầy đủ cho đội phát triển: với mỗi endpoint ghi **host thật**, **điều kiện tiên quyết**, **thời điểm client gọi**, **tham số gửi**, **trường phản hồi được dùng**, **mã lỗi xử lý** và **vị trí mã**. Trích từ `src/` ngày 2026-11-02, cập nhật 2026-11-03 theo upstream v0.0.6 (sau đợt khắc phục kiểm toán). Mọi hành vi giao thức là bản tái hiện từ Zalo PC 26.10.11; đổi tham số phải có bằng chứng capture (`re-notes/`).
+Tài liệu tra cứu đầy đủ cho đội phát triển: với mỗi endpoint ghi **host thật**, **điều kiện tiên quyết**, **thời điểm client gọi**, **tham số gửi**, **trường phản hồi được dùng**, **mã lỗi xử lý** và **vị trí mã**. Trích từ `src/` ngày 2026-11-02, cập nhật 2026-11-04 theo upstream v0.0.7 (Telex IME #71, trình xem ảnh #72, đồng bộ điện thoại khi đăng nhập #73, đặt tên file tải #74 — không thêm endpoint Zalo mới). Mọi hành vi giao thức là bản tái hiện từ Zalo PC 26.10.11; đổi tham số phải có bằng chứng capture (`re-notes/`).
 
 ---
 
@@ -393,10 +393,10 @@ Các pha sau **không có endpoint mới**: nghỉ 600 ms, rút tối đa 5 lô 
 
 ### 12.3 Proxy và đa tài khoản (#64) — thay đổi đường đi, không thêm endpoint
 
-- Nguồn cấu hình theo thứ tự: `--proxy <url>` → biến môi trường `ZALO_PROXY` rồi `CTDOZLITE_PROXY` → `proxy_url` lưu trong `session.json` / `settings.json`. `session::normalize_proxy_url` chỉ chấp nhận `http://`, `https://`, `socks5://`, `socks5h://` (chuỗi `host:port` trần được gắn `http://`); `redact_proxy_url` che `user:pass@` khi hiển thị.
+- Nguồn cấu hình theo thứ tự: `--proxy <url>` → biến môi trường `ZALO_PROXY` rồi `CTDOZLITE_PROXY` → `proxy_url` lưu trong `session.json` / `settings.json`. `session::normalize_proxy_url` chỉ chấp nhận `http://`, `https://` (chuỗi `host:port` trần được gắn `http://`); `redact_proxy_url` che `user:pass@` khi hiển thị. **SOCKS bị từ chối** vì `reqwest` biên dịch không bật feature `socks`, nhận vào sẽ hỏng mọi request (khắc phục U-04, 2026-11-04).
 - **Phạm vi proxy chỉ là client HTTP `reqwest` trong `Session`** (`build_http_client`). Tải ảnh/thumbnail/sticker dùng lại `Session.http` nên cũng đi qua proxy. WebSocket (`src/socket.rs`) và relay UDP VoIP (`src/call.rs`, `src/media.rs`) **không** đi qua proxy (updater cũng đi thẳng nhưng đích là GitHub). Người dùng bật proxy để ẩn địa chỉ IP vẫn lộ IP thật trên WebSocket và cuộc gọi; xem phát hiện bổ sung trong `docs/KIEM_TOAN_HE_THONG.html`.
-- `--profile <tên>` (chỉ chữ, số, `-`, `_`) đặt thư mục dữ liệu thành `<data_dir>/profiles/<tên>` nên mỗi tài khoản có `session.json`, DB và cookie riêng; nút "Mở cửa sổ Zalo mới" trong Cài đặt khởi chạy thêm một tiến trình với `--gui --profile <tên> [--proxy <url>]`.
+- `--profile <tên>` (chỉ chữ, số, `-`, `_`) đặt thư mục dữ liệu thành `<data_dir>/profiles/<tên>` nên mỗi tài khoản có `session.json`, DB và cookie riêng; nút "Mở cửa sổ Zalo mới" trong Cài đặt khởi chạy thêm một tiến trình với `--gui --profile <tên>`, truyền proxy qua biến môi trường `ZALO_PROXY` (không còn đặt `--proxy` trên dòng lệnh để mật khẩu proxy không lộ trong tham số tiến trình — khắc phục U-06). `settings.json` nay ghi bằng `write_private_atomic` (quyền chủ sở hữu).
 
 ### 12.4 Sticker GIF nội bộ và định dạng văn bản — không gọi mạng
 
-Gói "Mèo Ami Bụng Bự" nhúng sẵn 15 cặp GIF/PNG trong `src/assets/ami_fat_cat/` (`cate_id` riêng, `sticker_id` 999001–999015) và được gửi như sticker thường qua `/api/.../sticker` (mục 7). Giải mã `params.textProperties` (RTF của Zalo PC/Mobile) và render Markdown diễn ra hoàn toàn trên client từ nội dung tin nhắn đã nhận; đây là bề mặt phân tích dữ liệu không tin cậy mới, chưa có bằng chứng lỗi nhưng cần đọc kỹ khi kiểm toán lại.
+Gói "Mèo Ami Bụng Bự" nhúng sẵn 15 cặp GIF/PNG trong `src/assets/ami_fat_cat/` (`cate_id` riêng, `sticker_id` 999001–999015) và được gửi như sticker thường qua `/api/.../sticker` (mục 7). Giải mã `params.textProperties` (RTF của Zalo PC/Mobile) và render Markdown diễn ra hoàn toàn trên client từ nội dung tin nhắn đã nhận; đây là bề mặt phân tích dữ liệu không tin cậy. Rà soát 2026-11-04 tìm và sửa: panic do span RTF tràn số (U-02, nay dùng `checked_add`) và biến dạng văn bản gửi đi do Markdown bắt dấu `* _ ~` giữa từ (U-03, nay chỉ mở span ở ranh giới từ, bỏ gạch dưới).
